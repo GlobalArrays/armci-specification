@@ -1,0 +1,1920 @@
+\documentclass[12pt]{article}
+\renewcommand{\baselinestretch}{1.0}
+\begin{document}
+\begin{titlepage}
+\begin{center}
+{\LARGE DRAFT: Specification for the Aggregate Remote Memory Copy Interface (ARMCI)}
+\end{center}
+\bf{Abstract:}
+\end{titlepage}
+\tableofcontents
+\newpage
+\pagestyle{plain}
+\section{Introduction}
+The Aggregate Remote Memory Copy Interface (ARMCI) grew out of the development
+of the Global Arrays (GA) Toolkit. Global Arrays, in turn, was originally developed
+developed to support the NWChem Quantum Chemistry package but it has sinced
+proved useful in a large number of other application areas. Early in the
+development of GA it was realized that it would be useful to separate the GA
+functionality from the underlying native libraries that could directly
+communicate with the network. Implementing GA on top of these libraries was
+desirable because of the performance gains that could be achieved, but doing
+this created significant porting and code management issues. Separating the bulk
+of the GA implementation from the network and device dependent code was an
+obvious solution and led to the development of the ARMCI interface.
+
+Since that time ARMCI has been ported to many of the major networks used in modern
+high performance computing platforms, including most of Department of Energy's
+flagship machines. Recently there has been interest on the part of groups
+outside of the original development team in implementing the ARMCI interface and
+this specification document is a reponse to that interest. The functions
+described herein are the minimum set of functions required to support the
+current GA libraries, starting with the 5.2 release.
+\section{Header Files}
+Code that uses any of the standard ARMCI functions (any function whose name
+begins with the character string ARMCI\_) must include the header file
+\texttt{armci.h} at the top of the file. Any code that uses the ARMCI wrappers
+on top of the runtime system (any function whose name begins with the lower case
+character string armic\_) must also include the file \texttt{message.h}
+\section{Initialization and Termination}
+This section will discuss initialization and termination of the ARMCI library.
+\subsection{ARMCI\_Init}
+\begin{verbatim}
+int ARMCI_Init(void)
+\end{verbatim}
+This function initializes the ARMCI library. An initialization function must be
+called before most other ARMCI calls can be made. This function returns a value of
+0 if successful.
+\subsection{ARMCI\_Init\_args}
+\begin{verbatim}
+int ARMCI_Init_args(int *argc,
+                    char ***argv)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{argc}: pointer to number of arguments
+\item (IN) \texttt{argv}: pointer to a list of character strings representing
+the arguments
+\end{itemize}
+This function initializes the ARMCI library. An initialization function must be
+called before most other ARMCI calls can be made. This function returns a value of
+0 if successful. This initialization function takes arguments that will be
+passed on to the \texttt{MPI\_Init} routine, if it has not already been called.
+QUESTION: Do we want to include a function that is so closely tied to MPI?
+
+\subsection{ARMCI\_Finalize}
+\begin{verbatim}
+void ARMCI_Finalize(void)
+\end{verbatim}
+This function terminates the ARMCI library. It should be called before
+terminating the underlying runtime (e.g. MPI).
+
+\subsection{ARMCI\_Initialized}
+\begin{verbatim}
+int ARMCI_Initialized(void)
+\end{verbatim}
+This function can by used to determine if the ARMCI library has been
+initialized. It returns 0 if ARMCI has not already been initialized and is
+non-zero if ARMCI is initialized.
+
+\section{Memory Management}
+ARMCI has its own memory allocation and deallocation mechanisms. This is
+necessary because reading and writing to remote memory locations requires that
+the memory be registered with the network and that the processor originating the
+read, write or accumulate has the network address of the remote memory location.
+The network address is then used in the one-sided communications calls described
+below.
+
+Allocation of a distributed block of memory that will be used in communication
+operations is a collective operation that results in each process having an
+array of pointers that points to the allocated memory on every process. For each
+processor, the entry in this processor corresponding to the processor ID is just
+a conventional pointer, for remote processors it is a network address. For all
+processors, the entry in the ``pointer'' array, or appropriate offsets to it,
+can be used in one-sided communication calls to specify the location of data on
+a remote processor. All one-sided communication calls must use memory allocated
+with the ARMCI memory allocation functions for the remote memory location. Local
+buffers can be allocated using either ARMCI or other conventional
+allocation protocols.
+
+The memory allocation functions in ARMCI also provide a mechanism for allocating
+local buffers that can be accessed remotely. These allocations both create the
+requested memory segment as well as an associated meta-data object
+\texttt{armci\_meminfo\_t} that provides both local and network addresses and the
+size of the allocated segment. This data object is defined in the \texttt{armci.h}
+header file. The meta-data descriptor contains the following members:
+\begin{itemize}
+\item{\texttt{char *armci\_addr}}: a network address that can be used to
+access the data remotely if the accessing processor is on another SMP node
+\item{\texttt{char *addr}}: the local address of the allocated memory
+\item{\texttt{size}}: total size of the allocated segment
+\item{\texttt{cpid}}: processor ID on which data is allocated
+\end{itemize}
+
+\subsection{ARMCI\_Set\_shm\_limit}
+\begin{verbatim}
+void ARMCI_Set_shm_limit(unsigned long limit)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{limit}: Amount of memory requested (in bytes)
+\end{itemize}
+This function is used to set the maximum amount of memory that can be allocated
+using \texttt{ARMCI\_Malloc}, \texttt{ARMCI\_Malloc\_local} and
+\texttt{ARMCI\_Memget}. Because of
+fragmentation issues, etc. the actual amount of memory available may be less
+than this limit.
+
+\subsection{ARMCI\_Malloc}
+\begin{verbatim}
+int ARMCI_Malloc(void *ptr_arr[],
+                 armci_size_t bytes)
+\end{verbatim}
+\begin{itemize}
+\item (OUT) \texttt{ptr\_arr}: array of pointers to allocated memory
+\item (IN) \texttt{bytes}: amount of memory in bytes to be allocated on calling
+processor
+\end{itemize}
+This function is a collective operation across all processors. Each process
+specifies the amount of memory in bytes that it wants to allocate locally and
+returns an array of pointers indicating the location of the allocated memory on
+all processors. These pointers can be used to reference the allocated memory on
+all processors in ARMCI one-sided communication calls. The array
+\texttt{ptr\_arr} should be previously allocated with a size that is equal to
+the number of processors times the size of a void pointer. The function returns
+0 if the allocation is successful and a non-zero value otherwise.
+
+\subsection{ARMCI\_Free}
+\begin{verbatim}
+int ARMCI_Free(void *ptr_arr[])
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{ptr\_arr}: array of pointers to allocated memory
+\end{itemize}
+This function is a collective operation across all processors and frees the
+memory allocated in an \texttt{ARMCI\_Malloc} call. It returns 0 if the function is
+successful and a non-zero value otherwise.
+
+\subsection{ARMCI\_Malloc\_local}
+\begin{verbatim}
+void* ARMCI_Malloc_local(armci_size_t bytes)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{bytes}: amount of memory in bytes to be allocated
+\end{itemize}
+This function will allocate a local segment of memory out of registered memory on
+the calling processor. This memory may increase performance if used as the local
+buffer in an ARMCI one-sided communication call. The return value is a pointer
+to the allocated memory.
+
+\subsection{ARMCI\_Free\_local}
+\begin{verbatim}
+int ARMCI_Free_local(void *ptr)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{ptr}: pointer to local memory
+\end{itemize}
+This function can be used to free a block of memory allocated using the
+\texttt{ARMCI\_Malloc\_local} function. It returns 0 if successful.
+
+\subsection{ARMCI\_Uses\_shm}
+\begin{verbatim}
+int ARMCI_Uses_shm(void)
+\end{verbatim}
+This function can be used to query the underlying implementation of ARMCI. It
+returns 0 if shared-memory was not used in implementing ARMCI and a non-zero
+value otherwise. This information can be used to increase performance in
+applications built on ARMCI.
+
+\subsection{ARMCI\_Memget}
+\begin{verbatim}
+void ARMCI_Memget(size_t bytes,
+                  armci_meminfo_t *meminfo,
+                  int memflg)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{bytes}: number of bytes requested
+\item (OUT) \texttt{meminfo}: meta-data structure containing information on
+allocated memory
+\item (IN) \texttt{memflg}: flag for future optimizations
+\end{itemize}
+This function allocates a segment of memory that can be accessed remotely by
+other processors. It returns the meta-data required to access this memory in the
+structure meminfo.
+
+\subsection{ARMCI\_Memat}
+\begin{verbatim}
+void* ARMCI_Memat(armci_meminfo_t *meminfo,
+                  long offset)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{meminfo}: meta-data structure containing information on
+allocated memory
+\item (IN) \texttt{offset}: offset (in bytes) for shifting value of memory
+location
+\end{itemize}
+This function returns a pointer for a segment of memory allocated using the
+\texttt{ARMCI\_Memget} function. If the value of \texttt{offset} is 0, this function
+returns either a valid local pointer or the network address of the allocated
+memory segment, for non-zero values of \texttt{offset} the value is shifted by
+\texttt{offset} bytes. The returned pointer can be used in any ARMCI one-sided
+call.
+
+\subsection{ARMCI\_Memctl}
+\begin{verbatim}
+void ARMCI_Memctl(armci_meminfo_t *meminfo)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{meminfo}: meta-data structure containing information on
+memory segment
+\end{itemize}
+This function will free up a segment of memory allocated using the
+\texttt{ARMCI\_Memget}
+command. The \texttt{meminfo} input must contain the same information as the
+\texttt{armci\_meminfo\_t} struct that was used to create the segment.
+
+\section{Blocking Communication of Structured Data}
+Functions that can be used to read data on other processors, write data to other
+processors and modify data on other processors are described here. These
+functions can be broken up into three different classes.
+\begin{enumerate}
+\item Functions that work on contiguous blocks of data in both the local and
+remote buffers.
+\item Functions that work on non-contiguous blocks of data in both the local and
+remote buffers. However, the local and remote data is strided in regular
+patterns. This is frequently encountered when operating on rectangular
+subsections of data blocks that are part of regular arrays.
+\item Functions that work on randomly located data elements for both the local
+and remote buffers.
+\end{enumerate}
+This section will describe functions that work on contiguous and strided data.
+
+The basic pattern for describing strided data is used in all the strided calls
+and will be summarized here. In general, strided data is used when
+working with a rectangular sub-block of a higher dimensional data array. Suppose
+one is starting with an array of dimension $N$. The individual axes have
+magnitudes $D_1$, $D_2$,..., $D_N$ and the size of the individual array elements
+in bytes is $E$. The fastest dimension is indexed by 1, followed by
+consecutively slower dimensions. The total array will be represented by a contiguous
+block of memory of size $T=E\Pi_{i=1}^{N}D_i$. A rectangular sub-block of this
+array will form a regular pattern in memory within the segment representing the
+entire array.
+
+Suppose the sub-block is characterized by the upper and lower indices $\{U_i\}$
+and $\{L_i\}$. The length of each dimension of the sub-block is then
+$\{S_i=U_i-L_i+1\}$. If the first element is scaled by the size of the
+individual elements $E$ then $S_1^{\prime} = E\times S_1$ is equal to the size of individual
+contiguous memory segments in the sub-block. The values of the $S_i$, with $S_1$
+scaled by $E$ go into the \texttt{count} array described in the strided
+functions below.
+
+The strides for the sub-block are determined from the dimensions of the original
+array. For an array of $N$ dimensions, $N-1$ strides are needed to complete the
+description of the data layout. The first stride $M_1$ is given by the product
+of $D_1$ and $E$. The remaining $N-1$ stides can be obtained from the recursion
+formula $M_i = M_{i-1}D_i$. The location of any byte in the selected sub-block can
+be indexed by the set of integers $\{I_i\}$ where $I_i$ lies between 0 and the
+corresponding value in the \texttt{count} array minus 1. The offset of this byte
+from the first byte in the sub-block is given by the formula
+\[ \Delta_{offset} = I_1 + \sum_{i=2}^{N}I_i M_{i-1} \]
+The strides are located in the \texttt{dst\_stride\_arr} and
+\texttt{src\_stride\_arr} arrays described below. The dimension of the array is
+stored in the \texttt{stride\_levels} variable.
+
+The ARMCI interface also supports remote accumulate operations for both
+structured and unstructured data. These operations can be used to add data in a
+local buffer to existing data on a remote processor. These operations are atomic
+so only one process can modify a given data location at any one time. Because of
+the commutivity of addition, this guarantees that the result of multiple
+accumulates at a given processor location will give the same value (modulo
+possible roundoff errors) regardless of the order in which they occur. The types
+of accumulate operations that are supported
+by ARMCI are addition of C-integers, C-doubles, C-floats, single precision
+complex numbers, double precision complex numbers, and C-longs. Addition of
+single precision complex and double precision complex numbers correspond to two
+consecutive C-floats and C-doubles, respectively. In the accumulate operations
+described in the rest of this document, the accumulates on different types
+of data are distinguished by the C-preprocessor macros
+\newline
+\begin{center}
+\begin{tabular}{l}
+\texttt{ARMCI\_ACC\_INT} \\
+\texttt{ARMCI\_ACC\_DBL} \\
+\texttt{ARMCI\_ACC\_FLT} \\
+\texttt{ARMCI\_ACC\_CPL} \\
+\texttt{ARMCI\_ACC\_DCP} \\
+\texttt{ARMCI\_ACC\_LNG}
+\end{tabular}
+\newline
+\end{center}
+corresponding
+to C-integers, C-doubles, C-floats, single precision complex numbers, double
+precision complex numbers, and C-longs. These macros are defined in the header
+file \texttt{armci.h}.
+
+Accumulate operations take the values in the local buffer, scale them by a
+specified amount and add them to the corresponding contents on the remote
+processor. Arithmetically, it performs the operation
+$a_{dst} = a_{dst} + s\times a_{src}$ for each element. The fact that data is
+locked on the remote processor while the accumulate operation is being performed
+may result in serialization of the code if many processors are trying to
+accumulate to the same processor simultaneously.
+
+
+QUESTION: Do we require remote buffers to be registered?
+
+QUESTION: Do we make any general statements about the order in which operations
+are executed?
+
+QUESTION: Are remote buffers locked while put/get operations are being
+implemented?
+
+\subsection{ARMCI\_Put}
+\begin{verbatim}
+int ARMCI_Put(void *src,
+              void *dst,
+              int bytes,
+              int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{dst}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{bytes}: number of bytes to be moved from local buffer to
+remote buffer.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\end{itemize}
+This function copies a contiguous block of data from a local buffer to a buffer
+on a remote processor. The local buffer on the calling process is assumed to be
+available for reuse when the function returns. The function returns a value of 0
+if successful.
+
+\subsection{ARMCI\_PutS}
+\begin{verbatim}
+int ARMCI_PutS(void *src_ptr,
+               int src_stride_arr[],
+               void *dst_ptr,
+               int dst_stride_arr[],
+               int count[],
+               int stride_levels,
+               int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src\_ptr}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{src\_stride\_arr}: array of strides for local source data.
+\item (IN) \texttt{dst\_ptr}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{dst\_stride\_arr}: array of strides for remote destination data.
+\item (IN) \texttt{count}: number of elements at each stride level.
+\texttt{count[0]} equals then number of bytes in each individual data data segment.
+\item (IN) \texttt{stride\_levels}: number of stride levels.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\end{itemize}
+This function is used to send a strided data set from a local buffer to a
+strided data set on a remote processor. The size and layout of the local and
+remote buffers may be different, hence the stride arrays for the local and
+remote buffers need to be specified separately. The \texttt{count} and
+\texttt{stride\_levels} are the same for both buffers and only need to be
+specified once. The local buffer on the calling process is assumed to be
+available for reuse when the function returns. The function returns a value of 0
+if successful.
+
+\subsection{ARMCI\_Get}
+\begin{verbatim}
+int ARMCI_Get(void *src,
+              void *dst,
+              int bytes,
+              int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src}: pointer to location of first byte in local buffer
+that receives data from remote buffer.
+\item (IN) \texttt{dst}: pointer to first byte in remote buffer from which data
+will be sent.
+\item (IN) \texttt{bytes}: number of bytes to be moved from remote buffer to
+local buffer.
+\item (IN) \texttt{proc}: network rank of remote processor from which data is
+being received.
+\end{itemize}
+This function copies a contiguous block of data from a remote processor to a buffer
+on the calling processor. The local buffer on the calling process is assumed to
+contain the requested data and be available for use when the function returns. The
+function returns a value of 0 if successful.
+
+\subsection{ARMCI\_GetS}
+\begin{verbatim}
+int ARMCI_GetS(void *src_ptr,
+               int src_stride_arr[],
+               void *dst_ptr,
+               int dst_stride_arr[],
+               int count[],
+               int stride_levels,
+               int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src\_ptr}: pointer to location of first byte in local buffer
+that will receive data from remote buffer.
+\item (IN) \texttt{src\_stride\_arr}: array of strides for local source data.
+\item (IN) \texttt{dst\_ptr}: pointer to first byte in remote buffer from which
+data will be sent.
+\item (IN) \texttt{dst\_stride\_arr}: array of strides for remote destination data.
+\item (IN) \texttt{count}: number of elements at each stride level.
+\texttt{count[0]} equals then number of bytes in each individual data data segment.
+\item (IN) \texttt{stride\_levels}: number of stride levels.
+\item (IN) \texttt{proc}: network rank of remote processor from which data is
+being sent.
+\end{itemize}
+This function is used to collect a strided data set from a remote processor to a
+strided data set on the calling processor. The size and layout of the local and
+remote buffers may be different, hence the stride arrays for the local and
+remote buffers need to be specified separately. The \texttt{count} and
+\texttt{stride\_levels} are the same for both buffers and only need to be
+specified once. The local buffer on the calling process is assumed to be
+contain the requested data and be available for use when the function returns. The
+function returns a value of 0 if successful.
+
+\subsection{ARMCI\_Acc}
+\begin{verbatim}
+int ARMCI_Acc(int optype,
+              void *scale,
+              void *src,
+              void *dst,
+              int bytes,
+              int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{optype}: value specifies what type of data is being operated
+on. Values are mapped to C-preprocessor macros described above and defined in
+\texttt{armci.h}.
+\item (IN) \texttt{scale}: value of scale factor by which values in local buffer
+should be multiplied before adding them to the contents of the remote buffer.
+The value in scale should correspond to the value given in \texttt{optype}.
+\item (IN) \texttt{src}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{dst}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{bytes}: number of bytes to be moved from local buffer to
+remote buffer.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\end{itemize}
+This function is used to accumulate a contiguous block of data on the calling
+processor into a contiguous block of data on
+remote processor. The local buffer on the calling process is assumed to be
+available for reuse when the function returns. The function returns a value of 0
+if successful.
+
+\subsection{ARMCI\_AccS}
+\begin{verbatim}
+int ARMCI_AccS(int optype,
+               void *scale,
+               void *src_ptr,
+               int src_stride_arr[],
+               void *dst_ptr,
+               int dst_stride_arr[],
+               int count[],
+               int stride_levels,
+               int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{optype}: value specifies what type of data is being operated
+on. Values are mapped to C-preprocessor macros described above and defined in
+\texttt{armci.h}.
+\item (IN) \texttt{scale}: value of scale factor by which values in local buffer
+should be multiplied before adding them to the contents of the remote buffer.
+The value in scale should correspond to the value given in \texttt{optype}.
+\item (IN) \texttt{src\_ptr}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{src\_stride\_arr}: array of strides for local source data.
+\item (IN) \texttt{dst\_ptr}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{dst\_stride\_arr}: array of strides for remote destination data.
+\item (IN) \texttt{count}: number of elements at each stride level.
+\texttt{count[0]} equals then number of bytes in each individual data data segment.
+\item (IN) \texttt{stride\_levels}: number of stride levels.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\end{itemize}
+This function is used to accumulate a strided data set from a local buffer to a
+strided data set on a remote processor. The size and layout of the local and
+remote buffers may be different, hence the stride arrays for the local and
+remote buffers need to be specified separately. The \texttt{count} and
+\texttt{stride\_levels} are the same for both buffers and only need to be
+specified once. The local buffer on the calling process is assumed to be
+available for reuse when the function returns. The function returns a value of 0
+if successful.
+
+\section{Blocking Communication of Unstructured Data}
+The operations described in this section are designed to move random segments of
+data on the calling processor to and from random locations on the remote
+processor. These routines are completely general, but may sacrifice performance
+that is available when manipulating more structured data. These routines all
+take arrays of the \texttt{armci\_giov\_t} data structure as an argument.
+This data structure is defined as
+\begin{verbatim}
+                   typedef struct {
+                       void **src_ptr_array;
+                       void **dst_ptr_array;
+                       int  ptr_array_len;
+                       int bytes;
+                   } armci_giov_t;
+\end{verbatim}
+It describes the memory locations of the data on the local and remote processor,
+the size of the data elements, and the number of data elements. All data
+elements described by a single instance of this structure are assumed to be the
+same size. The source and destination arrays are defined by the direction of
+data movement and may be on the local or remote processor, depending on what
+kind of operation is being performed. For a gather operation, the source array
+refers to data on the remote processor and the destination array refers to the
+local process, for scatter operations the roles are reversed.
+
+The \texttt{src\_ptr\_array} is an array of void pointers describing the
+locations of the source data, the \texttt{dst\_ptr\_array} array describes the
+destination locations of the data, \texttt{ptr\_array\_len} is the number of
+data elements that are to be moved and \texttt{bytes} is the size of the data
+elements. If data elements of different sizes need to be moved, then multiple
+structures need to be created, one for each size data element.
+
+QUESTION: Does \texttt{armci\_giov\_t} data structure have to be defined this
+way or is it only required to have these members? Implementations may be free to
+add additional elements for internal use?
+
+\subsection{ARMCI\_PutV}
+\begin{verbatim}
+int ARMCI_PutV(armci_giov_t darray[],
+               int len,
+               int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{darray}: an array of structures describing the
+locations in memory on both the local and remote processes, between which data
+will be moved. Each array element corresponds to different sized elements that
+will be moved between processors
+\item (IN) \texttt{len}: number of elements in \texttt{darray}.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\end{itemize}
+This operation is designed to move a random collection of elements from the
+calling process to a set of random locations on the remote process. The
+function returns 0 if successful. After the function returns, it is safe to
+modify the memory locations on calling process that contained the data being
+moved.
+
+\subsection{ARMCI\_GetV}
+\begin{verbatim}
+int ARMCI_GetV(armci_giov_t darray[],
+               int len,
+               int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{darray}: an array of structures describing the
+locations in memory on both the local and remote processes, between which data
+will be moved. Each array element corresponds to different sized elements that
+will be moved between processors
+\item (IN) \texttt{len}: number of elements in \texttt{darray}.
+\item (IN) \texttt{proc}: network rank of remote processor from which data is
+being received.
+\end{itemize}
+This operation is designed to move a random collection of elements from a
+remote process to a set of random locations on the calling process. The
+function returns 0 if successful. After the function returns, the data is
+located on the local process and it is safe to use it.
+
+\subsection{ARMCI\_AccV}
+\begin{verbatim}
+int ARMCI_AccV(int optype,
+               void *scale,
+               armci_giov_t darray[],
+               int len,
+               int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{optype}: value specifies what type of data is being operated
+on. Values are mapped to C-preprocessor macros described in the section on
+structured communication and defined in \texttt{armci.h}.
+\item (IN) \texttt{darray}: an array of structures describing the
+locations in memory on both the local and remote processes, representing the
+elements that will be used in the accumulate operation. The operation specified
+in the \texttt{optype} variable must apply to all data elements, which
+implicitly requires that all data elements must be the same size, so only 1
+element is needed in \texttt{darray}. However, for some applications, it may be
+convenient to use multiple array elements to describe the data layout.
+\item (IN) \texttt{len}: number of elements in \texttt{darray}.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\end{itemize}
+
+This operation is designed to accumulate a random collection of elements from the
+calling process to a set of random elements on the remote process. The function
+returns 0 if successful.  After the function returns, it is safe to
+modify the memory locations on calling process that contained the data being
+moved.
+
+\section{Non-Blocking Communication}
+The routines in this section are very similar to the routines described in the
+sections on blocking communication of structured and unstructured data. Refer to
+these sections for a description of data structures and data layouts. Blocking
+routines assume that local buffers are immediately available for use or reuse as
+soon as the operation is completed on the calling process. For non-block operations,
+in contrast, the state of the buffer is undetermined after the function returns
+on the calling process. Completion of the operation can be forced by calling a
+non-blocking wait function, after which the local buffers can safely be used or
+reused. For platforms that support non-blocking communication, a non-blocking
+call will complete in the interval between when the non-blocking function returns
+and the non-blocking wait is called. In the meantime, this interval can be used to
+do useful compuational work on the calling process. This will allow communication
+to overlap with computation and reduce the impact of communication latency and
+transfer times on scalability. Note that the non-blocking protocols can be
+implemented on all platforms regardless of whether the underlying hardware and
+OS supports non-blocking communication. In the event that non-blocking
+communication is not supported, the non-blocking data transfer calls are
+effectively blocking and the non-blocking wait call is a null operation.
+
+The non-blocking calls potentially interact with synchronization and data
+consistency operations (see below) differently from blocking communication. For
+blocking communication, an operation such as \texttt{ARMCI\_AllFence} guarantees that all
+communication has been completed on remote processors. For non-blocking
+communication, there is no such guarantee unless the wait function has been
+called on the non-blocking handle before the fence operation. If no wait
+function has been called on the one-sided operation, then the status of the data
+on remote processors remains unknown after a call to fence.
+
+The non-blocking communication operations are distinguished from the blocking
+communication operations by the addition of an extra argument that keeps track
+of non-blocking operations. The argument is a pointer to a data structure
+defined as
+\begin{verbatim}
+                           typedef struct{
+                             int data[4];
+                             double dummy[72];
+                           } armci_hdl_t
+\end{verbatim}
+The sizes of 4 and 72 are chosen to reflect maximums on existing platforms, they
+can be increased as necessary for new systems.
+
+WE NEED SOME DISCUSSION OF HOW THIS DATA STRUCTURE IS USED AND WHAT HAPPENS TO
+IT IN A NON-BLOCKING CALL
+
+Apart from the non-blocking handle, the non-blocking calls are entirely
+analogous to the blocking calls and the reader is referred to the documentaion
+on those calls for additional information on other arguments.
+\subsection{ARMCI\_NbPut}
+\begin{verbatim}
+int ARMCI_NbPut(void *src,
+                void *dst,
+                int bytes,
+                int proc,
+                armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{dst}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{bytes}: number of bytes to be moved from local buffer to
+remote buffer.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This function copies a contiguous block of data from a local buffer to a buffer
+on a remote processor. The local buffer on the calling process is not available for
+reuse when the function returns and cannot safely be used until a non-blocking
+wait is called on the non-blocking handle. The function returns a value of 0
+if successful.
+
+\subsection{ARMCI\_NbPutS}
+\begin{verbatim}
+int ARMCI_NbPutS(void *src_ptr,
+                 int src_stride_arr[],
+                 void *dst_ptr,
+                 int dst_stride_arr[],
+                 int count[],
+                 int stride_levels,
+                 int proc,
+                 armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src\_ptr}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{src\_stride\_arr}: array of strides for local source data.
+\item (IN) \texttt{dst\_ptr}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{dst\_stride\_arr}: array of strides for remote destination data.
+\item (IN) \texttt{count}: number of elements at each stride level.
+\texttt{count[0]} equals then number of bytes in each individual data data segment.
+\item (IN) \texttt{stride\_levels}: number of stride levels.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+being sent.
+\end{itemize}
+This function is used to send a strided data set from a local buffer to a
+strided data set on a remote processor. The size and layout of the local and
+remote buffers may be different, hence the stride arrays for the local and
+remote buffers need to be specified separately. The \texttt{count} and
+\texttt{stride\_levels} are the same for both buffers and only need to be
+specified once. The local buffer on the calling process is not available for reuse
+when the function returns and cannot safely be used until a non-blocking wait is
+called on the non-blocking handle. The function returns a value of 0 if successful.
+
+\subsection{ARMCI\_NbGet}
+\begin{verbatim}
+int ARMCI_NbGet(void *src,
+                void *dst,
+                int bytes,
+                int proc,
+                armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src}: pointer to location of first byte in local buffer
+that receives data from remote buffer.
+\item (IN) \texttt{dst}: pointer to first byte in remote buffer from which data
+will be sent.
+\item (IN) \texttt{bytes}: number of bytes to be moved from remote buffer to
+local buffer.
+\item (IN) \texttt{proc}: network rank of remote processor from which data is
+being received.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This function copies a contiguous block of data from a remote processor to a buffer
+on the calling processor. The local buffer is not available for use until a
+non-blocking wait is called on the non-blocking handle. The function returns a value
+of 0 if successful.
+
+\subsection{ARMCI\_NbGetS}
+\begin{verbatim}
+int ARMCI_NbGetS(void *src_ptr,
+                 int src_stride_arr[],
+                 void *dst_ptr,
+                 int dst_stride_arr[],
+                 int count[],
+                 int stride_levels,
+                 int proc,
+                 armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{src\_ptr}: pointer to location of first byte in local buffer
+that will receive data from remote buffer.
+\item (IN) \texttt{src\_stride\_arr}: array of strides for local source data.
+\item (IN) \texttt{dst\_ptr}: pointer to first byte in remote buffer from which
+data will be sent.
+\item (IN) \texttt{dst\_stride\_arr}: array of strides for remote destination data.
+\item (IN) \texttt{count}: number of elements at each stride level.
+\texttt{count[0]} equals then number of bytes in each individual data data segment.
+\item (IN) \texttt{stride\_levels}: number of stride levels.
+\item (IN) \texttt{proc}: network rank of remote processor from which data is
+being sent.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This function is used to collect a strided data set from a remote processor to a
+strided data set on the calling processor. The size and layout of the local and
+remote buffers may be different, hence the stride arrays for the local and
+remote buffers need to be specified separately. The \texttt{count} and
+\texttt{stride\_levels} are the same for both buffers and only need to be
+specified once. The local buffer is not available for use until a
+non-blocking wait is called on the non-blocking handle. The
+function returns a value of 0 if successful.
+
+\subsection{ARMCI\_NbAcc}
+\begin{verbatim}
+int ARMCI_NbAcc(int optype,
+                void *scale,
+                void *src,
+                void *dst,
+                int bytes,
+                int proc,
+                armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{optype}: value specifies what type of data is being operated
+on. Values are mapped to C-preprocessor macros described in the section on
+blocking structured communication and defined in \texttt{armci.h}.
+\item (IN) \texttt{scale}: value of scale factor by which values in local buffer
+should be multiplied before adding them to the contents of the remote buffer.
+The value in scale should correspond to the value given in \texttt{optype}.
+\item (IN) \texttt{src}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{dst}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{bytes}: number of bytes to be moved from local buffer to
+remote buffer.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This function is used to accumulate a contiguous block of data on the calling
+processor into a contiguous block of data on remote processor. The local buffer on
+the calling process is not available for reuse when the function returns and cannot
+be used until a non-blocking wait is called on the non-blocking handle. The
+function returns a value of 0 if successful.
+
+\subsection{ARMCI\_NbAccS}
+\begin{verbatim}
+int ARMCI_NbAccS(int optype,
+                 void *scale,
+                 void *src_ptr,
+                 int src_stride_arr[],
+                 void *dst_ptr,
+                 int dst_stride_arr[],
+                 int count[],
+                 int stride_levels,
+                 int proc,
+                 armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{optype}: value specifies what type of data is being operated
+on. Values are mapped to C-preprocessor macros described in the section on
+blocking structured communication and defined in \texttt{armci.h}.
+\item (IN) \texttt{scale}: value of scale factor by which values in local buffer
+should be multiplied before adding them to the contents of the remote buffer.
+The value in scale should correspond to the value given in \texttt{optype}.
+\item (IN) \texttt{src\_ptr}: pointer to location of first byte in local buffer
+containing data to copied to remote buffer.
+\item (IN) \texttt{src\_stride\_arr}: array of strides for local source data.
+\item (IN) \texttt{dst\_ptr}: pointer to first byte in remote buffer into which local
+data will be copied.
+\item (IN) \texttt{dst\_stride\_arr}: array of strides for remote destination data.
+\item (IN) \texttt{count}: number of elements at each stride level.
+\texttt{count[0]} equals then number of bytes in each individual data data segment.
+\item (IN) \texttt{stride\_levels}: number of stride levels.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This function is used to accumulate strided data set from a local buffer to a
+strided data set on a remote processor. The size and layout of the local and
+remote buffers may be different, hence the stride arrays for the local and
+remote buffers need to be specified separately. The \texttt{count} and
+\texttt{stride\_levels} are the same for both buffers and only need to be
+specified once. The local buffer on the calling process is not available for reuse
+when the function returns and cannot be used until a non-blocking wait has been
+called on the non-blocking handle. The function returns a value of 0
+if successful.
+
+\subsection{ARMCI\_NbPutV}
+\begin{verbatim}
+int ARMCI_NbPutV(armci_giov_t darray[],
+                 int len,
+                 int proc,
+                 armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{darray}: an array of structures describing the
+locations in memory on both the local and remote processes, between which data
+will be moved. Each array element corresponds to different sized elements that
+will be moved between processors
+\item (IN) \texttt{len}: number of elements in \texttt{darray}.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This operation is designed to move a random collection of elements from the
+calling process to a set of random locations on the remote process.
+The local buffer on the calling process is not available for reuse when
+the function returns and cannot safely be used until a non-blocking wait is
+called on the non-blocking handle. The function returns a value of 0 if
+successful.
+
+\subsection{ARMCI\_NbGetV}
+\begin{verbatim}
+int ARMCI_NbGetV(armci_giov_t darray[],
+                 int len,
+                 int proc,
+                 armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{darray}: an array of structures describing the
+locations in memory on both the local and remote processes, between which data
+will be moved. Each array element corresponds to different sized elements that
+will be moved between processors
+\item (IN) \texttt{len}: number of elements in \texttt{darray}.
+\item (IN) \texttt{proc}: network rank of remote processor from which data is
+being received.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This operation is designed to move a random collection of elements from a
+remote process to a set of random locations on the calling process. The
+function returns 0 if successful.  The local buffer is not available for use until
+a non-blocking wait is called on the non-blocking handle. The
+function returns a value of 0 if successful.
+
+\subsection{ARMCI\_NbAccV}
+\begin{verbatim}
+int ARMCI_NbAccV(int optype,
+                 void *scale,
+                 armci_giov_t darray[],
+                 int len,
+                 int proc,
+                 armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{optype}: value specifies what type of data is being operated
+on. Values are mapped to C-preprocessor macros described in the section on
+blocking structured communication and defined in \texttt{armci.h}.
+\item (IN) \texttt{darray}: an array of structures describing the
+locations in memory on both the local and remote processes, representing the
+elements that will be used in the accumulate operation. The operation specified
+in the \texttt{optype} variable must apply to all data elements, which
+implicitly requires that all data elements must be the same size, so only 1
+element is needed in \texttt{darray}. However, for some applications, it may be
+convenient to use multiple array elements to describe the data layout.
+\item (IN) \texttt{len}: number of elements in \texttt{darray}.
+\item (IN) \texttt{proc}: network rank of remote processor to which data is
+being sent.
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+
+This operation is designed to accumulate a random collection of elements from the
+calling process to a set of random elements on the remote process.
+The local buffer on the calling process is not available for reuse
+when the function returns and cannot be used until a non-blocking wait has been
+called on the non-blocking handle. The function returns a value of 0
+if successful.
+
+\subsection{ARMCI\_Wait}
+\begin{verbatim}
+int ARMCI_Wait(armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This function forces local completion of a non-blocking communication operation.
+For gets, this implies that the data has arrived in the local buffer and is
+ready for use, for puts and accumulates, this implies that data in the local
+buffer has been injected into the communication network and the local buffer is
+ready for reuse. This call does not guarantee completion of the operation on the
+remote processor. The function returns a value of 0 if successful.
+
+\subsection{ARMCI\_Test}
+\begin{verbatim}
+int ARMCI_Test(armci_hdl_t *nbhandle)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{nbhandle}: non-blocking request handle
+\end{itemize}
+This function returns the current status of the non-blocking operation. If it
+returns 0, the operation has not completed locally, if it non-zero then the
+operation has completed locally. This can be used to determine if a subsequent
+call to \texttt{ARMCI\_Wait} will result in a significant delay until the non-blocking
+operation completes or whether \texttt{ARMCI\_Wait} will return immediately. It can be
+used to further optimize latency-hiding strategries.
+
+\subsection{ARMCI\_WaitAll}
+\begin{verbatim}
+int ARMCI_WaitAll(void)
+\end{verbatim}
+This function forces all outstanding non-blocking operations originating from
+the calling processor to complete. All non-blocking handles will be cleared. It
+has the same effect as looping over all outstanding non-blocking calls on the
+processor and calling \texttt{ARMCI\_Wait}. This function returns a value of 0 if
+successful.
+
+\subsection{ARMCI\_WaitProc}
+\begin{verbatim}
+int ARMCI_WaitProc(int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{proc}: processor on which wait is invoked
+\end{itemize}
+This function forces all outstanding non-blocking operations between the calling
+processor and the process indicated in the \texttt{proc} argument to complete.
+This function returns a value of 0 if successful.
+
+\section{Errors}
+The ARMCI interface only contains one function for handling errors. Calling this
+function will result in the code exiting execution on all processors and
+reporting an error message to standard I/O.
+
+\subsection{ARMCI\_Error}
+\begin{verbatim}
+void ARMCI_Error(char *msg,
+                 int code)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{msg}: descriptive error message
+\item (IN) \texttt{code}: integer code describing error
+\end{itemize}
+This function can be called by any processor to halt execution of the code and
+stop all processes. The user can supply a descriptive error message in the
+string \texttt{msg} that can be used to characterize the error as well as an
+integer code for the error that can also be used to describe the error or to
+write out an integer parameter that could be useful in debugging. Note that
+additional information can be included in the character string.
+
+\section{Synchronization and Data Consistency}
+The one-sided communication model that ARMCI supports does not make any guarantees
+about message ordering or completion of writes on remote processors. In order to
+be able to guarantee that data is in a consistent state, ARMCI provides functions
+that can be used to force completion of outstanding messages and to synchronize
+the code.
+
+Note that non-blocking calls are in an undefined state with respect to the fence
+and barrier operations if no wait function has been called before one of the
+synchronization calls. The operation may or may not complete locally and/or
+remotely in this case.
+
+\subsection{ARMCI\_Barrier}
+\begin{verbatim}
+void ARMCI_Barrier(void)
+\end{verbatim}
+This function can be used to force synchronization of the code. It must be
+called by all processors. No processor can proceed beyond this point in the code
+until all processors have reached this point. This function guarantees that all
+outstanding messages have been flushed from the system.
+
+\subsection{ARMCI\_Fence}
+\begin{verbatim}
+void ARMCI_Fence(int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{proc}: rank of remote processor
+\end{itemize}
+This operation guarantees that all outstanding communication between the calling
+process and the process specified in the \texttt{ARMCI\_Fence} call are completed. In
+particular, puts and accumulates have been completed on the remote process.
+
+\subsection{ARMCI\_AllFence}
+\begin{verbatim}
+void ARMCI_AllFence(void)
+\end{verbatim}
+This operation guarantees that all outstanding communication between the calling
+process and all other processes are completed. In particular, put and
+accumulates have been completed on the remote processes.
+
+\section{Locks, Mutexes, and Atomic Operations}
+Locks and mutexes can be used to protect critical sections of code so that key
+data can only be modified by one process at a time. This can be used to
+guarantee that commutative operations performed on remote processes will give
+the same answer (apart from possible roundoff issues) regardless of the order
+that they happen to be executed. The read-modify-write operation described below
+can be used to create global counters that can by used in dynamic load balancing
+schemes to distribute work to processors as they finish up tasks. Note that
+locks can potentially serialize code if several processors are trying to gain
+locks on the same mutexes simultaneously.
+
+Using mutexes can be broken up into two parts, the first is to create a set of
+mutexes and the second is to gain a lock on one of these mutexes. The creation
+of a set of mutexes is a collective operation and defines the number of mutexes
+that are available for locks. Once mutexes have been created, individual
+processes can obtain a lock on one of the created mutexes. If multiple processes
+attempt to lock a mutex at the same time, the first process to get to the mutex
+will gain the lock and the remaining processes will be blocked. Once the first
+process has finished the critical section and unlocked the mutex, some other
+process can then proceed to lock the mutex and execute the critical section.
+This continues until all processes that are trying to execute the critical
+section have gained a lock. Once all processes have finished with locks, the
+mutexes can be destroyed.
+
+\subsection{ARMCI\_Create\_mutexes}
+\begin{verbatim}
+void ARMCI_Create_mutexes(int num)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{num}: Number of mutexes to create
+\end{itemize}
+Create a fixed number of mutexes as specified by the input variable
+\texttt{num}. This is a collective operation. However, the number of mutexes
+requested can differ across processors.
+
+\subsection{ARMCI\_Destroy\_mutexes}
+\begin{verbatim}
+void ARMCI_Destroy_mutexes(void)
+\end{verbatim}
+Destroy all existing mutexes. This is a collective operation.
+
+\subsection{ARMCI\_Lock}
+\begin{verbatim}
+void ARMCI_Lock(int mutex,
+                int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{mutex}: mutex number
+\item (IN) \texttt{proc}: processor to which lock applies
+\end{itemize}
+Lock the mutex specified in the input variable \texttt{mutex} on process
+\texttt{proc}. This implies that no other process can grab this mutex until the
+calling process has unlocked the mutex on this process. Other process that try
+and grab the mutex while it is locked will wait in the \texttt{ARMCI\_Lock} call until
+the mutex is available. Only one process can gain access to the mutex after it
+is unlocked, so if multiple processes are trying to gain access to the mutex,
+execution will be serialized.
+
+\subsection{ARMCI\_Unlock}
+\begin{verbatim}
+void ARMCI_Unlock(int mutex,
+                  int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{mutex}: mutex number
+\item (IN) \texttt{proc}: processor to which lock applies
+\end{itemize}
+This call frees the mutex \texttt{mutex} on process \texttt{proc} so that it is
+available for locking by other processors.
+
+\subsection{ARMCI\_Rmw}
+\begin{verbatim}
+int ARMCI_Rmw(int op,
+              void *ploc,
+              void *prem,
+              int extra,
+              int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{op}: this parameter indicates the operation to be performed
+as will as the data type one which it operates. The operations are defined
+through C-preprocessor macros in \texttt{armci.h} and can take the values
+\newline
+\begin{center}
+\begin{tabular}{l}
+\texttt{ARMCI\_SWAP} \\
+\texttt{ARMCI\_SWAP\_LONG} \\
+\texttt{ARMCI\_FETCH\_AND\_ADD} \\
+\texttt{ARMCI\_FETCH\_AND\_ADD\_LONG}
+\end{tabular}
+\newline
+\end{center}
+This options apply to either int or long variables.
+\item (IN) \texttt{ploc}: pointer to local data location
+\item (IN) \texttt{prem}: pointer to remote data location
+\item (IN) \texttt{extra}: amount that remote data should be incremented
+\item (IN) \texttt{proc}: remote processor containing data to be modified
+\end{itemize}
+This operation does an atomic modification of either a C int or long
+variable on a remote processor. The value on the remote process is locked while
+this operation is taking place so that no other process can modify it until the
+operation is complete. The swap option will exchange the value of the
+variable on a remote processor at the location \texttt{prem} with the
+corresponding local variable at the location \texttt{ploc}. In this case, the
+\texttt{extra} argument is unused.
+
+QUESTION: What, if anything, does the return value mean in this case?
+
+The fetch-and-add option gets the value at \texttt{prem} on the remote process
+and then increments that location by the amount \texttt{extra}. The value at the
+remote location is returned by \texttt{ARMCI\_Rmw} function.
+
+\section{Processor Configuration}
+QUESTION: We need to add stuff that allows users to access the number of
+processors, the rank of each process in the world group and other basic
+configuration information.
+
+\subsection{ARMCI\_Same\_node}
+\begin{verbatim}
+int ARMCI_Same_node(int proc)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{proc}: processor ID
+\end{itemize}
+This function can be used to determine if a processor is on the same SMP node.
+It returns 0 if the processor is on a different SMP node and may return 1 if the
+processor is on the same SMP node (this is an option that can depend on the
+feasibility of implementation). It must return 1 if the processor ID
+\texttt{proc} is the same as the calling processor.
+
+\section{Process Groups}
+Process groups are a mechanism for restricting the scope of global operations so
+that they act on a subset of processors instead of the entire world group. This
+can be useful for dividing up the entire processor domain (the ``world'' group)
+into subsections that can execute different code threads independently of each
+other. The process group functionality also allows users to allocate registered
+memory on a subset of processors to create data structures that are distributed
+across a subgroup but are not visible to the entire processor domain.
+
+When ARMCI is initialized, each process is given a unique processor ID on the
+world group that can be used to identify it in subsequent operations. When the
+world group is divided into subgroups, each process in the subgroup can also
+have a process group ID that is scaled against the size of the subgroup. Within
+the world group, the process has an ID that lies between 0 and $N-1$, where $N$
+is the total number of processes the job is running on, but within the subgroup
+the process has a second ID that lies between 0 and $M-1$, where $M$ is equal to
+the number of processes in the subgroup. When creating a subgroup of a subgroup,
+it is necessary to use the ID of the process within the parent subgroup.
+
+Groups are identified by an opaque data type, \texttt{ARMCI\_Group}, that is
+defined in the header file \texttt{armci.h}.
+
+\subsection{ARMCI\_Group\_create}
+\begin{verbatim}
+void ARMCI_Group_create(int n,
+                        int *pid_list,
+                        ARMCI_Group *group_out)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{n}: number of processors in the group
+\item (IN) \texttt{pid\_list}: array containing the IDs in the default group
+(usually the world group) of the processes in the new group
+\item (OUT) \texttt{group\_out}: handle for newly created group
+\end{itemize}
+This call is a collective operation and must be called by all processors that
+will be included in the new subgroup (e.g. all processes that are included in
+\texttt{pid\_list}). This is the only operation in ARMCI that is group aware and
+recognizes the default group (see below). If the default group is set to some
+other group besides the world group, then the parent group is set to the default
+group.
+
+\subsection{ARMCI\_Group\_create\_child}
+\begin{verbatim}
+void ARMCI_Group_create_child(int n,
+                              int *pid_list,
+                              ARMCI_Group *group_out,
+                              ARMCI_Group *group_parent)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{n}: number of processors in the group
+\item (IN) \texttt{pid\_list}: array containing the IDs in the parent group
+of the processes in the new group
+\item (OUT) \texttt{group\_out}: handle for newly created group
+\item (IN) \texttt{group\_out}: handle for parent group
+\end{itemize}
+This call is a collective operation and must be called by all processors that
+will be included in the new subgroup (e.g. all processes that are included in
+\texttt{pid\_list}). The processors in \texttt{pid\_list} must all be contained
+within \texttt{group\_parent}.
+
+\subsection{ARMCI\_Group\_free}
+\begin{verbatim}
+void ARMCI_Group_free(ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{group}: handle of group to be freed
+\end{itemize}
+This function can be used to destroy a group and free up resources for reuse.
+The argument is a handle to the group to be freed. This is a collective function
+on all processors in the group.
+
+\subsection{ARMCI\_Group\_rank}
+\begin{verbatim}
+int ARMCI_Group_rank(ARMCI_Group *group,
+                     int *rank)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{group}: handle of group for which rank is requested
+\item (OUT) \texttt{rank}: rank of calling processor in group
+\end{itemize}
+This function can be used to determine the rank of the calling process in the
+group \texttt{group}. The rank is returned in the corresponding \texttt{rank}
+variable and the function returns 0 if successful (e.g. the group exists).
+
+\subsection{ARMCI\_Group\_size}
+\begin{verbatim}
+void ARMCI_Group_size(ARMCI_Group *group,
+                      int *size)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{group}: handle of group for which size is requested
+\item (OUT) \texttt{size}: number of processors in group
+\end{itemize}
+This function can be used to determine the number of processors in
+group \texttt{group}. The size is returned in the \texttt{size} variable.
+
+\subsection{ARMCI\_Group\_set\_default}
+\begin{verbatim}
+void ARMCI_Group_set_default(ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{group}: handle of default group
+\end{itemize}
+This function can be used to change the default group. This group is assumed to
+be the parent group in group aware functions (currently on
+\texttt{ARMCI\_Group\_create}).
+
+\subsection{ARMCI\_Group\_get\_default}
+\begin{verbatim}
+void ARMCI_Group_get_default(ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (OUT) \texttt{group}: handle of default group
+\end{itemize}
+This function can be used to get a handle to the current default group.
+
+\subsection{ARMCI\_Group\_get\_world}
+\begin{verbatim}
+void ARMCI_Group_get_world(ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (OUT) \texttt{group}: handle of world group
+\end{itemize}
+This function can be used to get a handle to the world group.
+
+\subsection{ARMCI\_Absolute\_id}
+\begin{verbatim}
+int ARMCI_Absolute_id(ARMCI_Group *group,
+                      int group_rank)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{group}: handle of group
+\item (IN) \texttt{group\_rank}: rank of process in group
+\end{itemize}
+This function can be used to convert the rank of the process in a group to its
+rank in the world group. The inputs are a group handle and the rank of the
+process within the group, the function returns the rank of that process in the
+world group. This is useful for finding world group ranks of other processes in
+a group.
+
+\subsection{ARMCI\_Malloc\_group}
+\begin{verbatim}
+int ARMCI_Malloc_group(void *ptr_arr[],
+                       armci_size_t bytes,
+                       ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (OUT) \texttt{ptr\_arr}: array of pointers to data on each process
+\item (IN) \texttt{bytes}: size of memory allocation on calling process
+\item (IN) \texttt{group}: handle of group
+\end{itemize}
+This function is a collective operation on the group that allocates memory for
+an array that can be accessed remotely from other processors. The size of the
+allocation on each process is given in the \texttt{bytes} variable, this
+variable does not need to have the same value on each process. The location of
+the memory allocations is returned in the \texttt{ptr\_arr} array. These
+pointers can be used directly in one-sided messaging calls. This function
+returns 0 if successful.
+
+\subsection{ARMCI\_Free\_group}
+\begin{verbatim}
+int ARMCI_Free_group(void *ptr_arr[],
+                     ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{ptr\_arr}: array of pointers to data on each process
+\item (IN) \texttt{group}: handle of group
+\end{itemize}
+This function is a collective operation to free memory that was allocated using
+an \texttt{ARMCI\_Malloc\_group} call. It returns 0 if successful.
+
+\subsection{ARMCI\_Uses\_shm\_grp}
+\begin{verbatim}
+int ARMCI_Uses_shm_grp(ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{group}: handle of group
+\end{itemize}
+This function returns a non-zero value if there is more than 1 process per node
+and ARMCI is using shared memory. Otherwise, it returns 0.
+
+\section{Lightweight Wrappers on Top of the Underlying Runtime and Miscellaneous
+Functions}
+The Global Arrays Toolkit uses several lightweight wrappers that are sitting
+directly on top of the underlying runtime (usually MPI). These provide uniform
+access to simple functionality that is available from most communication
+runtimes. These include returning the total number of processors, process rank,
+global summations and simple send-receive protocols. High quality
+implementations of these functions are usually already available from the
+runtime library and it is not worth duplicating them in ARMCI. These functions
+are distinguished from the regular ARMCI functions by the lower-case prefix
+\texttt{armci\_}. These functions are also associated with the header file
+\texttt{messages.h}, which needs to be included in any file that uses these
+functions. The functionality could easily be included by directly calling the
+functionality in the underlying runtime library, however, using the wrappers
+provides more straightforward porting to a different runtime.
+
+Many of the operations described below are global operations that are performed
+across all processors. The allowed operations and the corresponding character
+strings used to specify them are 
+\begin{itemize}
+\item summation across all processors ('+')
+\item multiplication across all processors ('+')
+\item maximum value across all processors ('max')
+\item minimum value across all processors ('min')
+\item maximum of absolute value across all processors ('absmax')
+\item minimum of absolute value across all processors ('absmin')
+\item logical OR of value across all processors ('or')
+\end{itemize}
+These are used as the \texttt{op} values in the global operations (\texttt{gop})
+functions described below.
+
+Some of the global operations described below also rely on a data type defined
+through C-preprocessor macros in the \texttt{armci.h} include file. The allowed
+data types are
+\newline
+\begin{center}
+\begin{tabular}{l}
+\texttt{ARMCI\_INT} \\
+\texttt{ARMCI\_LONG} \\
+\texttt{ARMCI\_LONG\_LONG} \\
+\texttt{ARMCI\_FLOAT} \\
+\texttt{ARMCI\_DOUBLE}
+\end{tabular}
+\newline
+\end{center}
+
+\subsection{armci\_msg\_me}
+\begin{verbatim}
+int armci_msg_me(void)
+\end{verbatim}
+This function returns the rank of the calling processor.
+
+\subsection{armci\_msg\_nproc}
+\begin{verbatim}
+int armci_msg_nproc(void)
+\end{verbatim}
+This function returns the total number of processors.
+
+\subsection{armci\_msg\_snd}
+\begin{verbatim}
+void armci_msg_snd(int tag,
+                   void *buffer,
+                   int len,
+                   int to)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{tag}: unique tag for message
+\item (IN) \texttt{buffer}: pointer to local buffer containing data to be sent
+\item (IN) \texttt{len}: length of message (in bytes)
+\item (IN) \texttt{to}: ID of processor receiving the message
+\end{itemize}
+This function posts a send for a 2-sided exchange of data using a standard,
+blocking, message-passing protocal. The function requires a unique tag for the
+message that must be matched by the corresponding recieve, a location for a
+local buffer containing the data to be sent, the length of the data to be sent
+(in bytes) and the ID of the destination processor. The data in the send buffer
+is assumed to be contiguous. After the function returns, it is safe to use the
+buffer for new data.
+
+\subsection{armci\_msg\_rcv}
+\begin{verbatim}
+void armci_msg_rcv(int tag,
+                   void *buffer,
+                   int buflen,
+                   int *msglen,
+                   int from)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{tag}: unique tag for message
+\item (IN) \texttt{buffer}: pointer to local buffer containing data to be sent
+\item (IN) \texttt{buflen}: length of buffer (in bytes)
+\item (IN) \texttt{msglen}: size of incoming message (in bytes)
+\item (IN) \texttt{to}: ID of processor receiving the message
+\end{itemize}
+This function posts a receive for a 2-sided exchange of data using a standard,
+blocking, message-passing protocal. The function requires a unique tag for the
+message that must be matched by the corresponding receive, a location for a
+local buffer that will contain the incoming data, the size of the buffer
+(in bytes), the ID of originating processor and the size of the incoming data
+(in bytes). The data in the receive buffer is contiguous and is assumed to be
+available for use when the function returns.
+
+\subsection{armci\_msg\_gop\_scope}
+\begin{verbatim}
+void armci_msg_gop_scope(int scope,
+                         void *x,
+                         int n,
+                         char *op,
+                         int type)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{scope}: integer describing the scope over which the operation
+works
+\item (IN/OUT) \texttt{x}: pointer to local buffer containing an array of data items
+\item (IN) \texttt{n}: number of items in the array
+\item (IN) \texttt{op}: string describing the global operation to be performed
+\item (IN) \texttt{type}: integer describing the data type of the elements
+\end{itemize}
+This is a generic command that can be used to perform several different types of
+global operations. The scope variable is defined through C-preprocessor macros
+in the \texttt{armci.h} header file and can take the values
+\begin{itemize}
+\item \texttt{SCOPE\_ALL}: perform the global operation across all processors in
+the system
+\item \texttt{SCOPE\_NODE}: perform the global operation across all processors
+within an SMP node. Each SMP node performs the operation separately
+\item \texttt{SCOPE\_MASTER}: perform the global operation across the master
+processors on all SMP nodes in the system
+\end{itemize}
+This operation can support any global reduction operation
+performed using other, more specialized functions described below. The
+\texttt{scope} parameter defines how the global operation will be performed (e.g.
+over all processors, within processors on and SMP node, across the master process
+on all SMP nodes), the \texttt{op} parameter describes the operation to be
+performed, and the type parameter describes the data type of individual data
+elements. This function is a collective operation that is called by all processors
+in the system, except as modified by values of the \texttt{scope} argument. 
+
+\subsection{armci\_msg\_igop}
+\begin{verbatim}
+void armci_msg_igop(int *x,
+                    int n,
+                    char *op)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of int variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\end{itemize}
+This function performs a global reduction on an array of C int variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above. This is a collection operation that is called by
+all processors in the system.
+
+\subsection{armci\_msg\_lgop}
+\begin{verbatim}
+void armci_msg_lgop(long *x,
+                    int n,
+                    char *op)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of long variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\end{itemize}
+This function performs a global reduction on an array of C long variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above. This is a collection operation that is called by
+all processors in the system.
+
+\subsection{armci\_msg\_llgop}
+\begin{verbatim}
+void armci_msg_llgop(long long *x,
+                     int n,
+                     char *op)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of long long variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\end{itemize}
+This function performs a global reduction on an array of C long long variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above. This is a collection operation that is called by
+all processors in the system.
+
+\subsection{armci\_msg\_fgop}
+\begin{verbatim}
+void armci_msg_fgop(float *x,
+                    int n,
+                    char *op)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of float variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\end{itemize}
+This function performs a global reduction on an array of C float variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above. This is a collection operation that is called by
+all processors in the system.
+
+\subsection{armci\_msg\_dgop}
+\begin{verbatim}
+void armci_msg_dgop(double *x,
+                    int n,
+                    char *op)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of double variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\end{itemize}
+This function performs a global reduction on an array of C double variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above. This is a collection operation that is called by
+all processors in the system.
+
+\subsection{armci\_msg\_bcast}
+\begin{verbatim}
+void armci_msg_bcast(void *buffer,
+                     int len,
+                     int root)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{buffer}: pointer to buffer containing data to be broadcast
+\item (IN) \texttt{len}: size of data (in bytes) contained in buffer
+\item (IN) \texttt{root}: process from which data is broadcast
+\end{itemize}
+This function broadcasts data from the processor \texttt{root} to all other
+processors. Data in the buffer on processors that are not \texttt{root} is
+overwritten. This is a collective operation that is called by all processors
+in the system and all processors must specify the same size for the buffer data.
+
+\subsection{armci\_msg\_group\_gop\_scope}
+\begin{verbatim}
+void armci_msg_group_gop_scope(int scope,
+                               void *x,
+                               int n,
+                               char *op,
+                               int type,
+                               ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{scope}: integer describing the scope over which the operation
+works
+\item (IN/OUT) \texttt{x}: pointer to local buffer containing an array of data items
+\item (IN) \texttt{n}: number of items in the array
+\item (IN) \texttt{op}: string describing the global operation to be performed
+\item (IN) \texttt{type}: integer describing the data type of the elements
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This is a generic command that can be used to perform several different types of
+global operations over the processors in a processor group. The scope variable is
+defined through C-preprocessor macros in the \texttt{armci.h} header file and can take
+the values
+\begin{itemize}
+\item \texttt{SCOPE\_ALL}: perform the global operation across all processors in
+the group
+\item \texttt{SCOPE\_NODE}: perform the global operation across all processors
+within an SMP node in the group. Each SMP node in the group performs the
+operation separately
+\item \texttt{SCOPE\_MASTER}: perform the global operation across the master
+processors on all SMP nodes in the group
+\end{itemize}
+This operation can support any global reduction operation on a
+group performed using other, more specialized functions described below. The
+\texttt{scope} parameter defines how the global operation will be performed (e.g.
+over all processors, within processors on and SMP node, across the master process
+on all SMP nodes), the \texttt{op} parameter describes the operation to be
+performed, and the type parameter describes the data type of individual data
+elements. This function is a collective that is called by all processors in the
+group, except as modified by the \texttt{scope} argument. 
+
+\subsection{armci\_msg\_group\_igop}
+\begin{verbatim}
+void armci_msg_group_igop(int *x,
+                          int n,
+                          char *op,
+                          ARMCI_group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of int variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This function performs a global reduction on an array of C int variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above.
+
+\subsection{armci\_msg\_group\_lgop}
+\begin{verbatim}
+void armci_msg_group_lgop(long *x,
+                          int n,
+                          char *op,
+                          ARMCI_group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of long variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This function performs a global reduction over the processors in a processor
+group on an array of C long variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above.
+
+\subsection{armci\_msg\_group\_llgop}
+\begin{verbatim}
+void armci_msg_group_llgop(long long *x,
+                           int n,
+                           char *op,
+                           ARMCI_group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of long long variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This function performs a global reduction over the processors in a processor
+group on an array of C long long variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above.
+
+\subsection{armci\_msg\_group\_fgop}
+\begin{verbatim}
+void armci_msg_group_fgop(float *x,
+                          int n,
+                          char *op,
+                          ARMCI_group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of float variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This function performs a global reduction over the processors in a processor
+group on an array of C float variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above.
+
+\subsection{armci\_msg\_group\_dgop}
+\begin{verbatim}
+void armci_msg_group_dgop(double *x,
+                          int n,
+                          char *op,
+                          ARMCI_group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN/OUT) \texttt{x}: array of double variables on which global operation acts
+\item (IN) \texttt{n}: number of elements in array
+\item (IN) \texttt{op}: string describing global operation
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This function performs a global reduction over the processors in a processor
+group on an array of C double variables. The global
+operation is specified in the variable \texttt{op}. The possible values for this
+variable are described above.
+
+\subsection{armci\_msg\_grp\_bcast\_scope}
+\begin{verbatim}
+void armci_msg_bcast(int scope,
+                     void *buffer,
+                     int len,
+                     int root,
+                     ARMCI_Group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{scope}: integer describing the scope over which the operation
+works
+\item (IN/OUT) \texttt{buffer}: pointer to buffer containing data to be broadcast
+\item (IN) \texttt{len}: size of data (in bytes) contained in buffer
+\item (IN) \texttt{root}: process from which data is broadcast
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This function broadcasts data from the processor \texttt{root} to all other
+processors. Data in the buffer on processors that are not \texttt{root} is
+overwritten. This is a collective operation that must be called by all
+processors in \texttt{group}. Depending on the value of the scope variable
+this operation can behave in several different ways.  The scope variable is
+defined through C-preprocessor macros in the \texttt{armci.h} header file and can
+take the values
+\begin{itemize}
+\item \texttt{SCOPE\_ALL}: perform the global operation across all processors in
+the system. Only one process in the group is \texttt{root}
+\item \texttt{SCOPE\_NODE}: perform the global operation across all processors
+within an SMP node. Each SMP node performs the operation separately and each SMP
+node has a separate value of \texttt{root}. All processes with the node must
+have the same value of \texttt{root} and the root process must be in the node.
+\item \texttt{SCOPE\_MASTER}: perform the global operation across the master
+processors on all SMP nodes in the system. Only one master processor can be
+\texttt{root} and \texttt{root} must be a master process.
+\end{itemize}
+This function is a collective that must be called by all processors in the
+group, except as modified by the scope argument.
+
+\subsection{armci\_msg\_sel\_scope}
+\begin{verbatim}
+void armci_msg_sel_scope(int scope,
+                         void *buf,
+                         int len,
+                         char *op,
+                         int type,
+                         int contribute)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{scope}: integer describing the scope over which the operation
+works
+\item (IN/OUT) \texttt{buf}: pointer to buffer containing data that selection
+operation works on
+\item (IN) \texttt{len}: number of data elements contained in buffer
+\item (IN) \texttt{op}: type of selection operation to be performed
+\item (IN) \texttt{type}: type of data on which selection operation works
+\item (IN) \texttt{contribute}: this parameter can be used to control whether
+the contents on this processor contribute to the selection
+\end{itemize}
+This function can be used to select the maximum or minimum values in the vector
+\texttt{buf} across multiple processors. The allowed options for the \texttt{op}
+parameter are \texttt{"max"} and \texttt{"min"}. The parameter
+\texttt{"contribute"} can be used to specify whether the contents of a
+particular process contribute to the selection. The contents of \texttt{buf} at
+each element location upon completion contain the selection for that particular
+element across all processors. The scope variable is defined through C-preprocessor
+macros in the \texttt{armci.h} header file and can take the values
+\begin{itemize}
+\item \texttt{SCOPE\_ALL}: perform the selection operation across all processors in
+the system
+\item \texttt{SCOPE\_NODE}: perform the selection operation across all processors
+within an SMP node. Each SMP node performs the selection separately
+\item \texttt{SCOPE\_MASTER}: perform the selection operation across the master
+processors on all SMP nodes in the system
+\end{itemize}
+This function is a collective operation that must be called by all processors in
+the system, except as modified by the value of the \texttt{scope} argument.
+
+\subsection{armci\_msg\_group\_barrier}
+\begin{verbatim}
+void armci_msg_group_barrier(ARMCI_group *group)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{group}: handle for group over which operation extends
+\end{itemize}
+This function acts as a barrier for all processors in a group. All processors
+must reach this point in the code before any processor can proceed beyond this
+point. This function is a collective that must be called by all processors in the
+group.
+
+\section{Topology Functions}
+The functions in this section can be used to initiate inquiries about the
+topology of the architecture that ARMCI is running on. This was designed to
+probe the architecture of SMP nodes. Specifically, these functions can be
+used to discover which node a processor is running on, and how many processors
+are associated with the node. These functions all take an opaque object of type
+\texttt{armci\_domain\_t} as an argument. This argument describes the type of
+domain the functions are discribing. At present, the only supported argument is
+\texttt{ARMCI\_DOMAIN\_SMP}. If shared memory is not supported then the
+functions should all return values consistent with an SMP domain consisting of 1
+processor.
+
+\subsection{armci\_domain\_count}
+\begin{verbatim}
+int armci_domain_count(armci_domain_t domain)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{domain}: parameter describing the type of domain
+\end{itemize}
+This function returns the number of processors that are in the same domain as
+the processor calling the function. For SMP domains, this is equivalent to the
+number of processors on the SMP node of the process calling the function.
+
+\subsection{armci\_domain\_nprocs}
+\begin{verbatim}
+int armci_domain_nprocs(armci_domain_t domain,
+                        int glob\_proc\_id)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{domain}: parameter describing the type of domain
+\item (IN) \texttt{glob\_proc\_id}: the ID of the processor for which
+information is requested
+\end{itemize}
+This function returns the number of processors that are in the same domain as
+the processor specified by the variable \texttt{id}.
+
+\subsection{armci\_domain\_my\_id}
+\begin{verbatim}
+int armci_domain_my_id(armci_domain_t domain)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{domain}: parameter describing the type of domain
+requested
+\end{itemize}
+This function returns the domain ID of the domain that contains the processor
+that is calling the function.
+
+\subsection{armci\_domain\_id}
+\begin{verbatim}
+int armci_domain_id(armci_domain_t domain,
+                    int glob_proc_id)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{domain}: parameter describing the type of domain
+\item (IN) \texttt{glob\_proc\_id}: the ID of the processor for which information is
+requested
+\end{itemize}
+This function returns the domain ID of the domain that contains the processor
+corresponding to \texttt{glob\_proc\_id}. This ID is the global process ID.
+
+\subsection{armci\_domain\_glob\_proc\_id}
+\begin{verbatim}
+int armci_domain_glob_proc_id(armci_domain_t domain,
+                              int domain_id,
+                              int loc_proc_id)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{domain}: parameter describing the type of domain
+\item (IN) \texttt{domain\_id}: domain ID
+\item (IN) \texttt{loc\_proc\_id}: the local ID of process
+\end{itemize}
+This function returns the global process ID corresponding to the process
+specified by the \texttt{domain\_id} and \texttt{loc\_proc\_id} variables. The
+local processor ID is unique to processes within the domain but may be
+duplicated by processes in other domains.
+
+\subsection{armci\_domain\_same\_id}
+\begin{verbatim}
+int armci_domain_same_id(armci_domain_t domain,
+                         int glob_proc_id)
+\end{verbatim}
+\begin{itemize}
+\item (IN) \texttt{domain}: parameter describing the type of domain
+\item (IN) \texttt{glob\_proc\_id}: the global ID of another process
+\end{itemize}
+This function returns true if the process specified by \texttt{glob\_proc\_id}
+is in the same domain as the calling process.
+
+\section{Notes}
+\begin{itemize}
+\item Configuration functions should be added to the top level interface that
+provide the total number of processors and the processor ID. This capability is
+currently supported through the functions in wrapper layer
+\texttt{armci\_msg\_me} and \texttt{armci\_msg\_nproc}
+\item Do we need to support the functions \texttt{ARMCI\_Put\_flag} and
+\texttt{ARMCI\_PutS\_flag}? These are only used for some of the less reliable
+implementations of the ghost cell updates
+\item \texttt{armci\_msg\_grp\_barrier} should probably be promoted to a
+function in the top level ARMCI interface.
+\item The \texttt{armci\_hdl\_t} struct should be replaced by on opaque data
+type and initialization methods should be added to the interface instead of
+requiring users to initialize it explicitly.
+\item For \texttt{\_scope} operations using \texttt{SCOPE\_MASTER}, do these
+operations need to be called across all processors or just the master
+processors?
+\item The interface for the \texttt{ARMCI\_Memat}, \texttt{ARMCI\_Memget},
+\texttt{ARMCI\_Memctl} could probably be handled better
+\item Functions that still have not been dealt with: \texttt{armci\_msg\_sel}
+and/or \texttt{armci\_msg\_sel\_scope}, \texttt{armci\_msg\_bintree}, and
+\texttt{armci\_exchange\_address}. It may be possible to leave these out of the
+specification by modifing the Global Arrays implementation.
+\end{itemize}
+\end{document}
